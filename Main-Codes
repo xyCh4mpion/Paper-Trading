@@ -1,0 +1,191 @@
+# -*- coding: utf-8 -*-
+
+
+import selenium
+from selenium import webdriver
+import time
+from lxml import etree
+import re
+from selenium.webdriver.support.ui import Select
+from PIL import Image, ImageEnhance
+price = [False, False]
+# price = [2443, 2443]
+
+
+# 打开交易页面
+def open_page():
+    time.sleep(0.5)
+    js = 'window.open("http://shdwjmdx.gtadata.com/Pages/Default/Home/MatchIndex.aspx?TraderID=463927");'
+    # js = 'window.open("http://shdwjmdx.gtadata.com/Pages/Default/Home/MatchIndex.aspx?TraderID=463925");'
+    driver.execute_script(js)
+    handles = driver.window_handles  # 获取当前窗口句柄集合（列表类型）
+    driver.switch_to.window(handles[0])
+    driver.close()
+    handles = driver.window_handles
+    driver.switch_to.window(handles[0])
+
+
+# 当前持仓
+def order_data_position():
+    global flag_long, flag_short, m_position
+    driver.find_element_by_id("vslide-title-trade").click()
+    time.sleep(0.6)
+    driver.find_element_by_xpath('//a[@href="/Pages/Default/Query/HoldDetails.aspx"]').click()
+    time.sleep(4)
+    driver.find_element_by_xpath('//a[@rel="8"]').click()
+    time.sleep(3)
+    html_position = etree.HTML(driver.page_source)
+    result_position = etree.tostring(html_position, encoding = "utf-8", pretty_print= True, method = "html")
+    result_position = result_position.decode('utf-8')
+    # print(result_position)
+    r_position = r'<td field="Direction"><div style="width:32px;text-align:left;" class="datagrid-cell ">(.*?)</div></td>\s<td field="TodayOpenAvailableAmount"><div style="width:72px;text-align:left;" class="datagrid-cell ">(\d)</div></td>'
+    m_position = re.findall(r_position, result_position)
+    flag_long = 0
+    flag_short = 0
+    for stat in m_position:
+        if stat[0] == '买':
+            if stat[1] == 0:
+                flag_long =  0
+                print('多头已平')
+            else:
+                flag_long = float(stat[1])
+        if stat[0] == '卖':
+            if stat[1] == 0:
+                flag_short = 0
+                print('空头已平')
+            else:
+                flag_short = int(stat[1])
+
+
+# 主函数
+def order_main():
+    # 判断是否完成平仓
+    order_data_position()
+    while len(m_position) > 2:
+        driver.refresh()
+        print('refresh')
+        time.sleep(1)
+        order_data_position()
+    # 获取当前价格
+    driver.find_elements_by_xpath('//label[@class="vslide-title cls"]')[1].click()
+    time.sleep(0.2)
+    driver.find_element_by_xpath('//a[@href="/Pages/Default/StockMarket/PersonalGroups.aspx"]').click()
+    time.sleep(3)
+    html_price = etree.HTML(driver.page_source)
+    result_price = etree.tostring(html_price, encoding = "utf-8", pretty_print= True, method = "html")
+    result_price = result_price.decode('utf-8')
+    r_price = r'<td field="LastPrice"><div style="width:72px;text-align:left;" class="datagrid-cell "><span class="(color-up|color-down)">(.*?)</span>'
+    m_price = re.findall(r_price, result_price)
+    price.append(float(m_price[0][1]))
+    del price[0]
+    # 判断是否开盘过60秒
+    if price[0]:
+        change = (price[-1] - price[-2]) / price[-2]
+        trade(change)
+    else:
+        print('刚开盘')
+    # 更新持仓
+    order_data_position()
+    driver.find_elements_by_xpath('//label[@class="vslide-title cls"]')[1].click()
+
+
+# 交易策略
+def trade(change):
+    # 做空策略
+    time_trade_1 = time.perf_counter()
+    if change <= -0.0008 and current_time <= '14:55' and flag_short == 0:   # 开空
+        driver.find_element_by_xpath('//a[@title="点击下单"]').click()  # 打开下单界面
+        time.sleep(2)
+        Select(driver.find_element_by_id('dplBuySell')).select_by_value('3')    # 选择卖开
+        Select(driver.find_element_by_id('dplPriceType')).select_by_value('1')  # 选择市价
+        time.sleep(0.1)
+        driver.find_element_by_id('amount').send_keys('1')  # 卖一手
+        time.sleep(0.1)
+        driver.find_element_by_id('submitOrder').click() # 点击下单
+        print(current_time, 'short open', change, flag_short)
+        driver.refresh()    #重置界面
+        time.sleep(1)
+        driver.find_elements_by_xpath('//label[@class="vslide-title cls"]')[0].click()
+        time.sleep(0.2)
+        driver.find_element_by_xpath('//a[@href="/Pages/Default/StockMarket/PersonalGroups.aspx"]').click()
+        time.sleep(0.5)
+    if change >= -0.0004 and flag_short >= 1:   # 平空
+        driver.find_element_by_xpath('//a[@title="点击下单"]').click()  # 打开下单界面
+        time.sleep(2)
+        Select(driver.find_element_by_id('dplBuySell')).select_by_value('2')    # 选择买平
+        Select(driver.find_element_by_id('dplPriceType')).select_by_value('1')  # 选择市价
+        time.sleep(0.1)
+        driver.find_element_by_id('amount').send_keys('1')  # 平一手
+        time.sleep(0.1)
+        driver.find_element_by_id('submitOrder').click() # 点击下单
+        print(current_time, 'short close', change, flag_short)
+        driver.refresh()    #重置界面
+        time.sleep(1)
+        driver.find_elements_by_xpath('//label[@class="vslide-title cls"]')[0].click()
+        time.sleep(0.2)
+        driver.find_element_by_xpath('//a[@href="/Pages/Default/StockMarket/PersonalGroups.aspx"]').click()
+        time.sleep(0.5)
+    # 做多策略
+    if change >= 0.0008 and current_time <= '14:55' and flag_long == 0: # 开多
+        driver.find_element_by_xpath('//a[@title="点击下单"]').click()  # 打开下单界面
+        time.sleep(2)
+        Select(driver.find_element_by_id('dplBuySell')).select_by_value('1')    # 选择买开
+        Select(driver.find_element_by_id('dplPriceType')).select_by_value('1')  # 选择市价
+        time.sleep(0.1)
+        driver.find_element_by_id('amount').send_keys('1')  # 买一手
+        time.sleep(0.1)
+        driver.find_element_by_id('submitOrder').click() # 点击下单
+        print(current_time, 'long open', change, flag_long)
+        driver.refresh()    #重置界面
+        time.sleep(1)
+        driver.find_elements_by_xpath('//label[@class="vslide-title cls"]')[0].click()
+        time.sleep(0.2)
+        driver.find_element_by_xpath('//a[@href="/Pages/Default/StockMarket/PersonalGroups.aspx"]').click()
+        time.sleep(0.5)
+    if change <= 0.0004 and flag_long >= 1: # 平多
+        driver.find_element_by_xpath('//a[@title="点击下单"]').click()  # 打开下单界面
+        time.sleep(2)
+        Select(driver.find_element_by_id('dplBuySell')).select_by_value('4')    # 选择卖平
+        Select(driver.find_element_by_id('dplPriceType')).select_by_value('1')  # 选择市价
+        time.sleep(0.1)
+        driver.find_element_by_id('amount').send_keys('1')  # 平一手
+        time.sleep(0.1)
+        driver.find_element_by_id('submitOrder').click() # 点击下单
+        print(current_time, 'long close', change, flag_long)
+        driver.refresh()    #重置界面
+        time.sleep(1)
+        driver.find_elements_by_xpath('//label[@class="vslide-title cls"]')[0].click()
+        time.sleep(0.2)
+        driver.find_element_by_xpath('//a[@href="/Pages/Default/StockMarket/PersonalGroups.aspx"]').click()
+        time.sleep(0.5)
+        time_trade_2 = time.perf_counter()
+        print('used trading time', time_trade_2-time_trade_1)
+
+
+if __name__=="__main__":
+    loginurl = 'http://shdwjmdx.gtadata.com/index.aspx'
+    # 打开浏览器
+    driver = webdriver.Chrome()
+    driver.maximize_window()
+    driver.get(loginurl)
+    assert "VE竞赛管理系统-竞赛端" in driver.title
+    # 数据账号&密码(此处不提交)
+    driver.find_element_by_id('txtLoginName').send_keys("jr0220180001")
+    # driver.find_element_by_id('txtLoginName').send_keys("jr0120180050")
+    driver.find_element_by_id('txtToken').send_keys("123456")
+    # 提交登录
+    time.sleep(5)
+    driver.find_element_by_id("lnkLogin").click()
+    # 打开交易页面
+    open_page()
+    # 获取系统时间
+    current_time = time.strftime("%H:%M",time.localtime(time.time()))
+    # while current_time <= '23:59':
+    while current_time <= '14:59':
+        time_total1 = time.perf_counter()
+        order_main()
+        time_total2 = time.perf_counter()
+        diff_time = time_total2 - time_total1
+        print('current time: ', current_time, 'current position: ', m_position, 'used total time: ', diff_time)
+        time.sleep(40-diff_time)  # 分钟策略，计入策略执行时间的间隔
+        current_time = time.strftime("%H:%M", time.localtime(time.time()))
